@@ -1,0 +1,4 @@
+
+0 ШАГ. Если есть файл trained_classifier.joblib, переходите в ШАГ 2.
+1 ШАГ. Сначала запускаем файл classifier_agent_mod.py -> создаётся файл trained_clasifier.joblib, потом ШАГ 2.
+2 ШАГ. Запускаем файл classifier_agent.py.
