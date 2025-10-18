@@ -1,0 +1,48 @@
+# Основные библиотеки Python
+numpy
+pandas
+scikit-learn
+joblib
+
+# FAISS для поиска по эмбеддингам
+faiss-cpu
+
+# RAG / эмбеддинги
+torch
+transformers
+sentence-transformers
+
+# Кластеризация
+hdbscan
+
+# Парсинг документов
+beautifulsoup4
+lxml
+python-docx
+pdfminer.six
+pytesseract
+pdf2image
+
+# Для OCR (Tesseract)
+Pillow
+pypdf
+
+# Веб / API (если будет CLI/HTTP интерфейс)
+fastapi
+uvicorn
+
+# Утилиты
+tqdm
+python-dotenv
+
+# Для сериализации моделей и данных
+pickle-mixin
+
+# Дополнительно, если модели будут через GPU:
+# faiss-gpu 
+
+# Если будут использоваться OpenAPI и документация:
+pydantic
+
+# Для JSON лога
+orjson
