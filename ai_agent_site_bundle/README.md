@@ -18,7 +18,7 @@
 ### Вариант B: Хостовая машина (без контейнеров)
 1. Установите **Ollama** и подтяните модели:
    ```bash
-   ollama pull llama3.1
+   ollama pull qwen2:7b-q4_K_M
    ollama pull nomic-embed-text
    ```
 2. Создайте виртуальное окружение и установите зависимости:
@@ -54,7 +54,7 @@
 | Переменная | Значение по умолчанию |
 |-----------|------------------------|
 | OLLAMA_BASE_URL | http://ollama:11434 (в Docker) / http://localhost:11434 (локально) |
-| OLLAMA_CHAT_MODEL | llama3.1 |
+| OLLAMA_CHAT_MODEL | qwen2:7b-q4_K_M |
 | OLLAMA_EMBED_MODEL | nomic-embed-text |
 | CHROMA_DIR | ./app/storage/chroma |
 
