@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Локальный ИИ</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #0b0b0c;
+      color: #f5f5f7;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+    aside {
+      width: 260px;
+      background: #121214;
+      border-right: 1px solid #2a2a2e;
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+      gap: 12px;
+    }
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    .btn {
+      padding: 10px 14px;
+      background: #3a3aef;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .chats, .users {
+      flex: 1;
+      overflow-y: auto;
+      background: #1a1a1d;
+      border-radius: 8px;
+      padding: 8px;
+    }
+    .chat-item {
+      padding: 8px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .chat-item.active { background: #3a3aef33; }
+    .chat-item:hover { background: #2a2a2e; }
+    header {
+      padding: 14px 20px;
+      border-bottom: 1px solid #2a2a2e;
+      background: #121214;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    #log {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .bubble {
+      max-width: 80%;
+      padding: 12px 16px;
+      border-radius: 12px;
+      border: 1px solid #2a2a2e;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+    .user { background: #3a3aef22; align-self: flex-end; }
+    .assistant { background: #1a1a1e; align-self: flex-start; }
+    .system { color: #999; font-size: 13px; text-align: center; }
+    footer {
+      border-top: 1px solid #2a2a2e;
+      background: #121214;
+      padding: 12px 16px;
+      display: flex;
+      gap: 10px;
+    }
+    input {
+      flex: 1;
+      background: #1a1a1e;
+      border: 1px solid #2a2a2e;
+      color: #fff;
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <button id="newChat" class="btn">Новый чат</button>
+
+    <div class="section">
+      <h4 style="font-size:12px;color:#9a9a9a;margin:8px 0 4px;">Чаты</h4>
+      <div id="chats" class="chats"></div>
+    </div>
+
+    <div class="section">
+      <h4 style="font-size:12px;color:#9a9a9a;margin:8px 0 4px;">Пользователи</h4>
+      <div class="users"><div>🧠 Локальный: <b>Вы</b></div></div>
+    </div>
+
+    <button id="ingest" class="btn" style="margin-top:auto;">Индексировать знания</button>
+  </aside>
+
+  <main>
+    <header id="chatTitle">Новый чат</header>
+    <div id="log"></div>
+    <footer>
+      <input id="q" type="text" placeholder="Введите сообщение..." />
+      <button id="send" class="btn">Отправить</button>
+    </footer>
+  </main>
+
+<script>
+const chatsDiv = document.getElementById('chats');
+const log = document.getElementById('log');
+const q = document.getElementById('q');
+const send = document.getElementById('send');
+const ingest = document.getElementById('ingest');
+const newChatBtn = document.getElementById('newChat');
+const chatTitle = document.getElementById('chatTitle');
+
+let chats = JSON.parse(localStorage.getItem('local_ai_chats') || '[]');
+let activeChat = chats[0] || { id: Date.now(), title: 'Новый чат', messages: [] };
+saveChats();
+
+function saveChats() {
+  localStorage.setItem('local_ai_chats', JSON.stringify(chats));
+  renderChats();
+}
+
+function renderChats() {
+  chatsDiv.innerHTML = '';
+  chats.forEach(c => {
+    const div = document.createElement('div');
+    div.className = 'chat-item' + (c.id === activeChat.id ? ' active' : '');
+    div.textContent = c.title;
+    div.onclick = () => { activeChat = c; chatTitle.textContent = c.title; renderLog(); renderChats(); };
+    chatsDiv.appendChild(div);
+  });
+}
+
+function renderLog() {
+  log.innerHTML = '';
+  activeChat.messages.forEach(m => {
+    const div = document.createElement('div');
+    if (m.role === 'system') div.className = 'system';
+    else div.className = 'bubble ' + m.role;
+    div.textContent = m.text;
+    log.appendChild(div);
+  });
+  log.scrollTop = log.scrollHeight;
+}
+
+newChatBtn.onclick = () => {
+  const c = { id: Date.now(), title: 'Новый чат', messages: [] };
+  chats.unshift(c);
+  activeChat = c;
+  chatTitle.textContent = c.title;
+  saveChats();
+  renderLog();
+};
+
+send.onclick = async () => {
+  const text = q.value.trim();
+  if (!text) return;
+  q.value = '';
+  addMsg('user', text);
+  send.disabled = true;
+  try {
+    const resp = await fetch('/api/chat', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ query: text })
+    });
+    const data = await resp.json();
+    addMsg('assistant', data.answer || 'Нет ответа');
+  } catch(e) {
+    addMsg('system', 'Ошибка: ' + e.message);
+  } finally {
+    send.disabled = false;
+  }
+};
+
+ingest.onclick = async () => {
+  ingest.disabled = true;
+  addMsg('system', 'Индексирую базу знаний...');
+  try {
+    const resp = await fetch('/api/ingest', { method:'POST' });
+    if (resp.ok) addMsg('system', 'Индексация завершена');
+    else addMsg('system', 'Ошибка индексации');
+  } finally {
+    ingest.disabled = false;
+  }
+};
+
+function addMsg(role, text) {
+  activeChat.messages.push({ role, text });
+  renderLog();
+  chats = chats.map(c => c.id === activeChat.id ? activeChat : c);
+  saveChats();
+}
+
+renderChats();
+renderLog();
+</script>
+</body>
+</html>
