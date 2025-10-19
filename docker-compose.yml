@@ -1,0 +1,35 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "ps"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-agent-app
+    restart: unless-stopped
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+      - chroma:/app/app/storage/chroma
+    depends_on:
+      - ollama
+    command: [ "bash", "-lc", "python app/ingest_kb.py && uvicorn app.api:app --host 0.0.0.0 --port 8000" ]
+
+volumes:
+  ollama:
+  chroma:
