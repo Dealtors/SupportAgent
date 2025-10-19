@@ -73,3 +73,64 @@ flowchart TD
     U --> V
     P --> V
 ```
+## Бизнес логика retrain_loop
+```mermaid
+flowchart TD
+
+%% ==== ENTRY POINT ====
+A["Новый пользовательский запрос"] --> B["Модель выполняет предсказание"]
+B --> C{"Существует ticket_id?"}
+C -- "Нет" --> D["Создать ticket_id: hash текста + timestamp начала сессии"]
+C -- "Да" --> E["Обновить состояние тикета"]
+
+%% ==== FEEDBACK ====
+D --> F{"Получен фидбек пользователя?"}
+E --> F
+
+%% === ВЕТВЛЕНИЯ ПО ФИДБЕКУ ===
+F -- "Подтверждение" --> G1["Добавить (text, label) в dataset_train.csv"]
+F -- "Исправление" --> G2["Добавить (text, correct_label) в dataset_train.csv"]
+F -- "Отказ" --> G3["reject_count += 1"]
+F -- "Запрос оператора" --> G4["Эскалация в OperatorRouter"]
+F -- "Нет ответа" --> G5{"Проверка таймаута"}
+
+%% === TIMEOUT LOGIC ===
+G5 -- "Нет активности и нет отказов" --> G6["Auto-confirm → добавить (text, label)"]
+G5 -- "Нет активности, но были отказы" --> G7["Эскалация (timeout_after_reject)"]
+
+%% === ESCALATION CONDITIONS ===
+G3 -- "reject_count >= 2" --> G8["Эскалация (двойной отказ)"]
+G3 -- "reject_count < 2" --> H1["Продолжить диалог (fallback)"]
+
+%% === ОТВЕТ ОПЕРАТОРА ===
+G4 --> I1["Оператор возвращает ground_truth_label"]
+G8 --> I1
+G7 --> I1
+I1 --> I2["Добавить (text, ground_truth_label) в dataset_train.csv"]
+
+%% === LOGGING ===
+G1 --> L["Записать событие в logs.jsonl"]
+G2 --> L
+G3 --> L
+G4 --> L
+G5 --> L
+G6 --> L
+G7 --> L
+I2 --> L
+
+%% === RETRAIN + HOT RELOAD ===
+L --> J{"auto_retrain=True?"}
+J -- "Да" --> K["retrain_models(force=False)"]
+K --> K1{"Успех retrain?"}
+K1 -- "Да" --> K2["Обновление модели (hot reload)"]
+K1 -- "Нет" --> K3["Логирование ошибки retrain"]
+
+J -- "Нет" --> M["Отложенный retrain (cron, scheduler)"]
+
+%% === END OUTPUT ===
+K2 --> Z["Модель готова (новая версия)"]
+K3 --> Z
+H1 --> Z
+M --> Z
+
+```
