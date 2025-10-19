@@ -1,157 +1,144 @@
-from classifier_agent import create_classifier_agent  # твой модуль
-from retrain import retrain_models                   # твой retrain.py
-from .escalation_manager import EscalationManager
-from .operator_router import OperatorRouter
-from .config import LOGS_PATH, TRAIN_DATASET, REJECTS_TO_ESCALATE, INACTIVITY_MINUTES
-import pandas as pd
 import os
 import json
+import pandas as pd
 from datetime import datetime
+from typing import Optional
 
-def _append_jsonl(path, record):
+from .config import (
+    LOGS_PATH, TRAIN_DATASET,
+    CONFIDENCE_THRESHOLD, REJECTS_TO_ESCALATE, INACTIVITY_MINUTES
+)
+from .escalation_manager import EscalationManager
+from .operator_router import OperatorRouter  
+from ..src.retrain import retrain_models   
+from ..src.enhanced_classifier import EnhancedClassifierAgent
+
+def _append_jsonl(path: str, record: dict):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-def _append_train(text, label):
+def _append_train(text: str, label: str):
     os.makedirs(os.path.dirname(TRAIN_DATASET), exist_ok=True)
-    df = pd.DataFrame([{"text": text, "class": label}])
+    row = pd.DataFrame([{"text": text, "class": label}])
     if os.path.exists(TRAIN_DATASET):
-        df.to_csv(TRAIN_DATASET, mode="a", header=False, index=False)
+        row.to_csv(TRAIN_DATASET, mode="a", header=False, index=False)
     else:
-        df.to_csv(TRAIN_DATASET, index=False)
+        row.to_csv(TRAIN_DATASET, index=False)
 
 class FeedbackManager:
-    def __init__(self, auto_retrain=True, auto_reload=True):
+    """
+    Управляет самообучением и эскалациями.
+    """
+    def __init__(self, auto_retrain: bool = True):
         self.escalation = EscalationManager()
         self.router = OperatorRouter()
         self.auto_retrain = auto_retrain
-        self.auto_reload = auto_reload
-        self.classifier = create_classifier_agent()  # ← теперь понятно откуда
+        self.classifier = EnhancedClassifierAgent(model_path="models/trained_classifier.joblib")
 
-    def _log(self, event, data):
-        _append_jsonl(LOGS_PATH, {
-            "timestamp": datetime.utcnow().isoformat(),
-            "event": event,
-            **data
-        })
-
-    def _trigger_retrain(self):
-        if not self.auto_retrain:
-            return
-        result = retrain_models(force=False)
-        if result and self.auto_reload:
-            try:
-                self.classifier.load_model()  # ← подгружает новую модель
-                print("[FeedbackManager] 🔄 Hot reload модели выполнен")
-            except Exception as e:
-                print("[FeedbackManager] Ошибка hot reload:", e)
-
-    def register_prediction(self, ticket_id, text, predicted_class, confidence):
+    # --- Регистрация ответа модели ---
+    def register_prediction(self, text: str, ticket_id: str = None):
         now = datetime.utcnow()
+        if not ticket_id:
+            from .ticket_id import generate_ticket_id
+            ticket_id = generate_ticket_id(text, int(now.timestamp()))
+
+        predicted_class, confidence = self.classifier.predict(text)
         self.escalation.start(ticket_id, predicted_class, confidence, now)
-        self._log("prediction", {
+
+        _append_jsonl(LOGS_PATH, {
+            "timestamp": now.isoformat(),
+            "event": "prediction",
             "ticket_id": ticket_id,
             "text": text,
             "predicted_class": predicted_class,
             "confidence": confidence
         })
 
-    def feedback_ok(self, ticket_id, text, label):
+        return ticket_id, predicted_class, confidence
+
+    # --- Пользователь подтвердил ответ ---
+    def feedback_ok(self, ticket_id: str, text: str, label: str):
         st = self.escalation.get(ticket_id)
         if not st:
             return {"ok": False, "reason": "unknown_ticket"}
 
         _append_train(text, label)
-        self._log("feedback_ok", {
+        _append_jsonl(LOGS_PATH, {
+            "timestamp": datetime.utcnow().isoformat(),
+            "event": "feedback_ok",
             "ticket_id": ticket_id,
             "label": label,
             "confidence": st.confidence
         })
         self.escalation.mark_finished(ticket_id)
-        self._trigger_retrain()
+
+        if self.auto_retrain:
+            retrain_models(force=False)
+
         return {"ok": True, "action": "trained"}
 
-    def feedback_corrected(self, ticket_id, text, correct_label):
+    # --- Пользователь исправил ответ ---
+    def feedback_corrected(self, ticket_id: str, text: str, correct_label: str):
         st = self.escalation.get(ticket_id)
         if not st:
             return {"ok": False, "reason": "unknown_ticket"}
 
         _append_train(text, correct_label)
-        self._log("feedback_corrected", {
+        _append_jsonl(LOGS_PATH, {
+            "timestamp": datetime.utcnow().isoformat(),
+            "event": "feedback_corrected",
             "ticket_id": ticket_id,
-            "correct_label": correct_label,
-            "confidence": st.confidence
+            "correct_label": correct_label
         })
         self.escalation.mark_finished(ticket_id)
-        self._trigger_retrain()
+
+        if self.auto_retrain:
+            retrain_models(force=False)
+
         return {"ok": True, "action": "trained"}
 
-    def feedback_reject(self, ticket_id, text):
+    # --- Пользователь отказал ---
+    def feedback_reject(self, ticket_id: str, text: str):
         st = self.escalation.get(ticket_id)
         if not st:
             return {"ok": False, "reason": "unknown_ticket"}
 
         self.escalation.add_reject(ticket_id)
-        self._log("feedback_reject", {
+        _append_jsonl(LOGS_PATH, {
+            "timestamp": datetime.utcnow().isoformat(),
+            "event": "feedback_reject",
             "ticket_id": ticket_id,
-            "rejects": st.rejects,
-            "confidence": st.confidence
+            "rejects": st.rejects
         })
 
         if st.rejects >= REJECTS_TO_ESCALATE:
-            return self._escalate(ticket_id, text, "double_reject")
+            return self._escalate(ticket_id, text)
 
-        return {"ok": True, "action": "continue_dialog"}
+        return {"ok": True, "action": "continue"}
 
-    def feedback_operator_request(self, ticket_id, text):
-        return self._escalate(ticket_id, text, "user_requested_operator")
+    # --- Явное требование оператора ---
+    def feedback_operator_request(self, ticket_id: str, text: str):
+        return self._escalate(ticket_id, text)
 
-    def check_inactivity(self, ticket_id, text, label_if_ok):
+    # --- Внутренний метод эскалации ---
+    def _escalate(self, ticket_id: str, text: str):
         st = self.escalation.get(ticket_id)
-        if not st or st.finished or st.escalated:
-            return
 
-        now = datetime.utcnow()
-        if self.escalation.due_inactivity(ticket_id, now, INACTIVITY_MINUTES):
-            if st.rejects == 0:
-                _append_train(text, label_if_ok)
-                self._log("auto_confirm", {
-                    "ticket_id": ticket_id,
-                    "label": label_if_ok
-                })
-                self.escalation.mark_finished(ticket_id)
-                self._trigger_retrain()
-                return {"ok": True, "action": "trained_auto"}
-            else:
-                return self._escalate(ticket_id, text, "timeout_after_reject")
-
-    def operator_resolution(self, ticket_id, text, ground_truth_label):
-        st = self.escalation.get(ticket_id)
-        _append_train(text, ground_truth_label)
-        self._log("operator_resolution", {
-            "ticket_id": ticket_id,
-            "ground_truth": ground_truth_label
-        })
-        if st:
-            self.escalation.mark_finished(ticket_id)
-        self._trigger_retrain()
-        return {"ok": True, "action": "trained_from_operator"}
-
-    def _escalate(self, ticket_id, text, reason):
-        st = self.escalation.get(ticket_id)
         payload = {
             "ticket_id": ticket_id,
             "text": text,
             "predicted_class": st.predicted_class,
-            "confidence": st.confidence,
-            "reason": reason
+            "confidence": st.confidence
         }
         resp = self.router.send(payload)
-        self._log("escalated", {
+
+        _append_jsonl(LOGS_PATH, {
+            "timestamp": datetime.utcnow().isoformat(),
+            "event": "escalated",
             "ticket_id": ticket_id,
-            "reason": reason,
-            "crm_ok": resp.get("ok", False)
+            "payload": payload
         })
+
         self.escalation.mark_escalated(ticket_id)
-        return {"ok": True, "action": "escalated", "crm": resp}
+        return {"ok": True, "action": "escalated", "router_response": resp}
