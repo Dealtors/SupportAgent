@@ -1,151 +1,112 @@
 """
-retrain.py — модуль для реализации цикла самообучения (Self-Learning Loop)
-в ЖЁСТКОМ режиме (Full Retraining).
+retrain.py — Production-модуль полного переобучения (Full Retraining)
 
-Шаги:
-1. Чтение логов обращений
-2. Отбор успешных и неуверенных кейсов
-3. Обновление dataset_train.csv и dataset_review.csv
-4. Вызов функции обновления эмбеддингов (из ML1)
-5. Перестройка FAISS индекса
-6. Перестройка HDBSCAN кластеризации
+◾ Использует только dataset_train.csv
+◾ Никаких ручных review
+◾ Перезапускает эмбеддинги, FAISS, HDBSCAN
+◾ Учитывает версии модели
+◾ Можно запускать:
+    - retrain_models(force=False) → автопроверка объема данных
+    - retrain_models(force=True) → принудительно
 """
 
 import os
-import json
 import pandas as pd
-import numpy as np
-import pickle
 from datetime import datetime
 
-# Пути
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-LOGS_PATH = os.path.join(BASE_DIR, "data", "logs.jsonl")
 TRAIN_DATASET = os.path.join(BASE_DIR, "data", "dataset_train.csv")
-REVIEW_DATASET = os.path.join(BASE_DIR, "data", "dataset_review.csv")
+MODEL_VERSION_FILE = os.path.join(BASE_DIR, "models", "model_version.txt")
+LAST_RETRAIN_COUNT = os.path.join(BASE_DIR, "models", "last_retrain_count.txt")
 
-# Модули твоего проекта
+# Порог для автоматического обучения
+MIN_NEW_SAMPLES = int(os.getenv("MIN_NEW_SAMPLES", "50"))
+
+# Импорт ML-компонентов
 from search import SemanticSearch
 from cluster import ClusterModel
 
-# Важно: ML1 должен предоставить эту функцию!
 try:
     from embeddings_loader import rebuild_embeddings
 except ImportError:
-    raise ImportError("Функция rebuild_embeddings из ML1 не найдена. Убедитесь, что ML1 реализовал её.")
-
+    raise ImportError("Функция rebuild_embeddings() не найдена (нужно реализовать в ML1)")
 
 def log_event(message: str):
-    """Простой лог событий retrain."""
     print(f"[RETRAIN] {datetime.utcnow().isoformat()} - {message}")
 
+def _read_version() -> int:
+    if not os.path.exists(MODEL_VERSION_FILE):
+        return 0
+    try:
+        return int(open(MODEL_VERSION_FILE).read().strip())
+    except:
+        return 0
 
-def read_logs() -> list:
-    """Читает логи и возвращает список записей."""
-    if not os.path.exists(LOGS_PATH):
-        log_event("Лог-файл не найден, retrain невозможен")
-        return []
+def _write_version(version: int):
+    with open(MODEL_VERSION_FILE, "w") as f:
+        f.write(str(version))
 
-    records = []
-    with open(LOGS_PATH, 'r', encoding='utf-8') as f:
-        for line in f:
-            try:
-                records.append(json.loads(line))
-            except:
-                continue
-    log_event(f"Прочитано записей логов: {len(records)}")
-    return records
+def _read_last_count() -> int:
+    if not os.path.exists(LAST_RETRAIN_COUNT):
+        return 0
+    try:
+        return int(open(LAST_RETRAIN_COUNT).read().strip())
+    except:
+        return 0
 
+def _write_last_count(count: int):
+    with open(LAST_RETRAIN_COUNT, "w") as f:
+        f.write(str(count))
 
-def filter_training_cases(records: list):
-    """Отбираем кейсы для обучения и для review."""
-    train_data = []
-    review_data = []
+def _count_train_rows() -> int:
+    if not os.path.exists(TRAIN_DATASET):
+        return 0
+    df = pd.read_csv(TRAIN_DATASET)
+    return len(df)
 
-    for r in records:
-        conf = r.get("confidence")
-        feedback = r.get("feedback")
-        text = r.get("text")
-        label = r.get("predicted_class")
-
-        if not text or not label:
-            continue
-
-        # Успешно подтвержденные пользователем кейсы
-        if conf and conf > 0.8 and feedback == "OK":
-            train_data.append((text, label))
-
-        # Неуверенные кейсы
-        elif conf and conf < 0.6:
-            review_data.append((text, label))
-
-    log_event(f"Отобрано для обучения: {len(train_data)}, для review: {len(review_data)}")
-    return train_data, review_data
-
-
-def update_dataset(train_data, review_data):
-    """Обновление train и review датасетов."""
-    if train_data:
-        df_train = pd.DataFrame(train_data, columns=["text", "class"])
-        if os.path.exists(TRAIN_DATASET):
-            old = pd.read_csv(TRAIN_DATASET)
-            df_train = pd.concat([old, df_train], ignore_index=True)
-        df_train.to_csv(TRAIN_DATASET, index=False)
-
-    if review_data:
-        df_review = pd.DataFrame(review_data, columns=["text", "class"])
-        if os.path.exists(REVIEW_DATASET):
-            old = pd.read_csv(REVIEW_DATASET)
-            df_review = pd.concat([old, df_review], ignore_index=True)
-        df_review.to_csv(REVIEW_DATASET, index=False)
-
-    log_event("Датасеты обновлены")
-
-
-def retrain_models():
+def retrain_models(force: bool = False) -> bool:
     """
-    Главная функция полного переобучения.
+    Основной цикл retrain.
     """
-    log_event("=== СТАРТ SELF-LEARNING CYCLE ===")
+    log_event("=== SELF-LEARNING START ===")
 
-    # 1. Чтение логов
-    records = read_logs()
-    if not records:
-        log_event("Нет данных для retrain")
+    if not os.path.exists(TRAIN_DATASET):
+        log_event("dataset_train.csv не найден. Обучение невозможно.")
         return False
 
-    # 2. Отбор кейсов
-    train_data, review_data = filter_training_cases(records)
+    total_rows = _count_train_rows()
+    last_rows = _read_last_count()
+    new_rows = total_rows - last_rows
 
-    if not train_data:
-        log_event("Нет новых подтвержденных кейсов. Обучение пропущено.")
+    log_event(f"Всего обучающих примеров: {total_rows}")
+    log_event(f"Новых примеров с последнего retrain: {new_rows} / {MIN_NEW_SAMPLES}")
+
+    if not force and new_rows < MIN_NEW_SAMPLES:
+        log_event("Недостаточно данных → retrain пропущен.")
         return False
 
-    # 3. Обновление датасетов
-    update_dataset(train_data, review_data)
+    # === Шаг 1: Обновление эмбеддингов ===
+    log_event("Запуск rebuild_embeddings() ...")
+    rebuild_embeddings()
 
-    # 4. Пересоздание эмбеддингов (ML1 делает это)
-    log_event("Вызов обновления эмбеддингов (ML1)")
-    rebuild_embeddings()  # из ML1
-
-    # 5. Перестроение FAISS
-    log_event("Перестроение FAISS индекса")
+    # === Шаг 2: Перестроение FAISS ===
+    log_event("Перестроение FAISS индекса ...")
     search = SemanticSearch()
     search.build_faiss_index()
 
-    # 6. Перестроение HDBSCAN
-    log_event("Перестроение кластерной модели")
+    # === Шаг 3: Перестроение кластерной модели ===
+    log_event("Перестроение HDBSCAN кластеров ...")
     cm = ClusterModel()
     cm.build_clusters()
 
-    log_event("=== SELF-LEARNING COMPLETED ===")
+    # === Шаг 4: Обновление версии ===
+    current_version = _read_version()
+    new_version = current_version + 1
+    _write_version(new_version)
+    _write_last_count(total_rows)
+
+    log_event(f"✅ SELF-LEARNING COMPLETED. Новая версия: v{new_version}")
     return True
 
-
-# Пример запуска
 if __name__ == "__main__":
-    success = retrain_models()
-    if success:
-        print("✅ Retrain завершен успешно")
-    else:
-        print("⚠️ Обновление пропущено")
+    retrain_models(force=True)
