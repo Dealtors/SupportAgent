@@ -1,86 +1,158 @@
-import os
 import sys
-
-# Ensure project root is on sys.path so local package imports work when
-# running this script directly from the `ml_orchestrator` folder.
-# Assumption: repository root (where `rag_faiss_selflearn` lives) is the
-# parent of the `ml_orchestrator` directory.
-repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if repo_root not in sys.path:
-    sys.path.insert(0, repo_root)
-
-from rag_faiss_selflearn.src.enhanced_classifier import EnhancedClassifierAgent
-from rag_faiss_selflearn.app.feedback_manager import FeedbackManager
-from rag_faiss_selflearn.app.action_executor import ActionExecutor
-from rag_faiss_selflearn.app.ticket_id import generate_ticket_id
+import asyncio
+import logging
+from pathlib import Path
 from datetime import datetime
+
+# === Настройка путей ===
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
+from ml_core.parsers.document_parser import DocumentParser
+from ml_core.retrain.search import SemanticSearch
+from ml_core.classifier.enhanced_classifier import EnhancedClassifierAgent
+
+from new_app.feedback_manager import FeedbackManager
+from new_app.retrain_manager import RetrainManager
+from new_app.config import CONFIDENCE_THRESHOLD
+
+DATA_DIR = ROOT / "data"
+BK_DIR = DATA_DIR / "base_knoweledge"
+LOGS_DIR = ROOT / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(
+    filename=LOGS_DIR / "pipeline.log",
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    encoding="utf-8"
+)
+log = logging.getLogger("orchestrator")
+
 
 class Orchestrator:
     def __init__(self):
+        self.parser = DocumentParser()
+        self.search = SemanticSearch()
         self.classifier = EnhancedClassifierAgent(model_path="models/trained_classifier.joblib")
-        self.feedback_manager = FeedbackManager(auto_retrain=True)
-        self.actions = ActionExecutor()
+        self.feedback = FeedbackManager()
+        self.retrain = RetrainManager()
 
-    def process_user_message(self, text: str, session_ts: int | None = None):
-        # 1. Создаём ticket_id
-        ticket_id = generate_ticket_id(text, session_ts)
+    async def _run_async(self, func, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
-        # 2. Модель предсказывает
-        predicted_class, confidence = self.classifier.predict(text)
+    # ======================
+    #   ПОЛНЫЙ PIPELINE
+    # ======================
+    async def build_base_knowledge(self):
+        log.info("Старт индексации базы знаний")
+        parsed_docs = await self._run_async(self.parser.batch_parse, str(BK_DIR), False)
+        texts, sources = [], []
+        for doc in parsed_docs:
+            for page in doc.get("pages", []):
+                text = (page.get("text") or "").strip()
+                if text:
+                    texts.append(text)
+                    sources.append(doc.get("file", "unknown"))
 
-        # 3. Регистрируем в Feedback Manager
-        self.feedback_manager.register_prediction(
-            ticket_id=ticket_id,
-            text=text,
-            predicted_class=predicted_class,
-            confidence=confidence
+        if not texts:
+            return {"ok": False, "reason": "empty_base_knowledge"}
+
+        result = await self._run_async(self.search.build_embeddings_and_index, texts, sources)
+        log.info(f"База знаний проиндексирована: {result}")
+        return result
+
+    async def train_classifier(self):
+        dataset_path = DATA_DIR / "dataset_train.csv"
+        if not dataset_path.exists():
+            return {"ok": False, "error": "dataset_missing"}
+
+        report = await self._run_async(self.classifier.train_from_csv, str(dataset_path))
+        log.info(f"Классификатор обучен: {report}")
+        return {"ok": True, "report": report}
+
+    async def full_pipeline(self):
+        return await asyncio.gather(
+            self.build_base_knowledge(),
+            self.train_classifier()
         )
 
-        # 4. Если intent → выполняем action
-        action_result = self.actions.route_and_execute(text)
-        if action_result["ok"]:
-            response = action_result["message"]
-            return {
-                "ticket_id": ticket_id,
-                "response": response,
-                "type": "action"
-            }
+    # ======================
+    #   ОСНОВНОЙ ИНТЕРФЕЙС
+    # ======================
+    async def process_user_message(self, text: str, ticket_id: str = None):
+        """
+        Полный цикл:
+        - Генерация ticket_id (если новый диалог)
+        - Классификация
+        - Если низкая уверенность → подсказки из RAG
+        - Сохранение в лог
+        - Возврат: ticket_id, ответ модели, действия
+        """
+        result = await self._run_async(self.feedback.register_prediction, text, ticket_id)
+        ticket_id = result["ticket_id"]
+        model_class = result["class"]
+        confidence = result["confidence"]
 
-        # 5. Иначе — это класификация / FAQ / RAG
-        return {
+        response = {
             "ticket_id": ticket_id,
-            "response": f"Система считает, что это {predicted_class} (уверенность {confidence:.2f})",
-            "type": "classification"
+            "class": model_class,
+            "confidence": confidence,
+            "need_feedback": True,
+            "suggestions": []
         }
 
-    def process_feedback(self, ticket_id: str, text: str, feedback_type: str, correct_label: str = None):
+        if confidence < CONFIDENCE_THRESHOLD:
+            rag_results = await self._run_async(self.search.search_similar_by_text, text, 3)
+            response["suggestions"] = rag_results
+
+        return response
+
+    async def process_feedback(self, ticket_id: str, text: str, label: str, kind: str):
         """
-        feedback_type:
-            - ok
-            - corrected
-            - reject
-            - operator
+        Обработчик фидбека:
+        kind: ok / correct / reject / operator
         """
-        if feedback_type == "ok":
-            return self.feedback_manager.feedback_ok(ticket_id, text, correct_label or "model_label")
-        elif feedback_type == "corrected":
-            return self.feedback_manager.feedback_corrected(ticket_id, text, correct_label)
-        elif feedback_type == "reject":
-            return self.feedback_manager.feedback_reject(ticket_id, text)
-        elif feedback_type == "operator":
-            return self.feedback_manager.feedback_operator_request(ticket_id, text)
-        else:
-            return {"ok": False, "error": "unknown_feedback_type"}
+        actions = await self._run_async(self.feedback_router, ticket_id, text, label, kind)
+
+        # retrain trigger
+        if actions.get("trigger_retrain"):
+            await self._run_async(self.retrain.maybe_retrain)
+
+        return actions
+
+    def feedback_router(self, ticket_id, text, label, kind):
+        """Синхронный маршрут (в executor)"""
+        if kind == "ok":
+            return self.feedback.feedback_ok(ticket_id, text, label)
+        if kind == "correct":
+            return self.feedback.feedback_corrected(ticket_id, text, label)
+        if kind == "reject":
+            return self.feedback.feedback_reject(ticket_id, text)
+        if kind == "operator":
+            return self.feedback.feedback_operator_request(ticket_id, text)
+        return {"ok": False, "reason": "unknown_feedback"}
 
 
-"""orch = Orchestrator()
+# ============ DEMO ============
+async def main():
+    orch = Orchestrator()
+    await orch.full_pipeline()
 
-# Пользователь отправил сообщение
-result = orch.process_user_message("хочу сменить пароль")
+    # Пользователь написал
+    res = await orch.process_user_message("мне нужно изменить пароль")
+    print("Ответ модели:", res)
 
-# Если юзер отвечает "да, всё верно"
-orch.process_feedback(result["ticket_id"], "хочу сменить пароль", feedback_type="ok")
+    # Пользователь подтвердил
+    feedback = await orch.process_feedback(
+        ticket_id=res["ticket_id"],
+        text="мне нужно изменить пароль",
+        label="password_change",
+        kind="ok"
+    )
+    print("Ответ фидбека:", feedback)
 
-# Если юзер говорит "нет, это не то"
-orch.process_feedback(result["ticket_id"], "хочу сменить пароль", feedback_type="reject")
-"""
+if __name__ == "__main__":
+    asyncio.run(main())
