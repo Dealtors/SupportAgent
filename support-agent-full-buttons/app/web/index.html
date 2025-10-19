@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>AI Техподдержка — чат</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="styles.css" rel="stylesheet">
+</head>
+<body>
+
+  <header class="header">
+    <div class="container header-inner">
+      <div class="brand-badge">AI</div>
+      <div>
+        <div class="brand-title">AI Техподдержка</div>
+        <div class="brand-sub">Онлайн • Готова помочь</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container main">
+    <!-- ПУСТОЙ старт: без демо-сообщений -->
+    <div class="thread"></div>
+  </main>
+
+  <div class="composer">
+    <div class="container composer-inner">
+      <div style="display:flex; gap:12px; align-items:flex-end;">
+        <div style="flex:1;">
+          <div class="textarea-wrap round-xl">
+            <textarea class="textarea" rows="3" placeholder="Опишите вашу проблему…"></textarea>
+          </div>
+        </div>
+        <button class="send-btn" type="button" title="Отправить">Отправить</button>
+      </div>
+      <div class="hint small" style="opacity:.6;margin-top:6px">
+        * Ответы приходят в чат. Используйте иконки под сообщением, чтобы скопировать, отправить на почту, сформировать отчёт или оценить ответ.
+      </div>
+    </div>
+  </div>
+
+  <!-- ЛОГИКА -->
+  <script src="main.js"></script>
+</body>
+</html>

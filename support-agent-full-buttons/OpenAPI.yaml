@@ -1,0 +1,63 @@
+openapi: 3.0.3
+info:
+  title: SupportAgent API
+  version: "1.0.0"
+paths:
+  /ticket:
+    post:
+      summary: Классифицировать тикет, выполнить RAG и сгенерировать ответ
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text:
+                  type: string
+                ticket_id:
+                  type: string
+              required: [text]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ticket_id: { type: string }
+                  classification:
+                    type: object
+                    properties:
+                      label: { type: string }
+                      confidence: { type: number }
+                  docs:
+                    type: array
+                    items:
+                      type: object
+                  answer: { type: string }
+                  plan: { type: string }
+  /feedback:
+    post:
+      summary: Передать фидбек по тикету
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ticket_id: { type: string }
+                feedback: { type: string }
+                label: { type: string }
+              required: [ticket_id, feedback]
+      responses:
+        "200":
+          description: OK
+  /report:
+    get:
+      summary: Базовые метрики
+      responses:
+        "200":
+          description: OK
