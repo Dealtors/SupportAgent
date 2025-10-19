@@ -147,6 +147,73 @@ class SemanticSearch:
             raise RuntimeError(f"Ошибка преобразования текста в эмбеддинг: {str(e)}")
 
         return self.search_similar(query_vec, k)
+    
+    def build_embeddings_and_index(self, docs, sources, use_hnsw: bool = False):
+        """
+        Полный цикл:
+        1. Кодирует список `docs` в эмбеддинги (использует embed_text)
+        2. Сохраняет embeddings и metadata
+        3. Строит FAISS-индекс
+        Это используется оркестратором для автоматического обновления RAG.
+        """
+        if not isinstance(docs, list) or not isinstance(sources, list):
+            raise ValueError("docs и sources должны быть списками одинаковой длины")
+
+        if len(docs) != len(sources):
+            raise ValueError("docs и sources должны быть одинаковой длины")
+
+        embeddings_list = []
+        metadata = {"documents": []}
+
+        for idx, (text, src) in enumerate(zip(docs, sources)):
+            try:
+                emb = embed_text(text).astype("float32")
+                embeddings_list.append(emb)
+
+                metadata["documents"].append({
+                    "id": idx,
+                    "text": text,
+                    "path": src
+                })
+            except Exception as e:
+                log_event("error", "Ошибка эмбеддинга документа", {
+                    "text": text[:200],
+                    "exception": str(e)
+                })
+
+        if not embeddings_list:
+            log_event("error", "Нет эмбеддингов", {"count": len(docs)})
+            return {"ok": False, "error": "empty_embeddings"}
+
+        # Превращаем список эмбеддингов в numpy array
+        embeddings = np.vstack(embeddings_list)
+
+        # Сохраняем embeddings и metadata
+        os.makedirs(os.path.dirname(EMBEDDINGS_PATH), exist_ok=True)
+        np.save(EMBEDDINGS_PATH, embeddings)
+
+        os.makedirs(os.path.dirname(METADATA_PATH), exist_ok=True)
+        with open(METADATA_PATH, "wb") as f:
+            pickle.dump(metadata, f)
+
+        log_event("success", "Эмбеддинги и метаданные сохранены", {
+            "embeddings_path": EMBEDDINGS_PATH,
+            "metadata_path": METADATA_PATH,
+            "count": len(metadata["documents"])
+        })
+
+        # Обновляем внутреннее состояние объекта
+        self.metadata = metadata
+
+        # Строим FAISS индекс
+        self.build_faiss_index(use_hnsw=use_hnsw)
+
+        return {
+            "ok": True,
+            "documents_indexed": len(metadata["documents"]),
+            "index_path": self.index_path
+        }
+
 
 
 # Пример самостоятельного запуска
