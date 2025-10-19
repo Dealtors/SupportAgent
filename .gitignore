@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node/Vite
+node_modules/
+app/web/dist/
+
+# Data
+app/storage/chroma/
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
