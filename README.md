@@ -209,7 +209,7 @@ SL3 --> ST2 & ST3
 
 ## Быстрый старт
 
-Ссылка на ветку с ИИ-агентом: https://github.com/Dealtors/SupportAgent/tree/add-docusaurus-docs
+Ссылка на ветку с ИИ-агентом: https://github.com/Dealtors/SupportAgent/tree/add-docusaurus-docs/support-agent-full-buttons
 
 ### Вариант A: Docker
 1. Установите Docker и включите BuildKit.
