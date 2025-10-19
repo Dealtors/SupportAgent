@@ -139,62 +139,71 @@ M --> Z
 
 ```mermaid
 flowchart LR
-    classDef default margin:50px,padding:30px;
- subgraph User_Interface["Пользовательский интерфейс"]
-        UI1["CLI / Chat Interface"]
-        UI2["Web UI (опционально)"]
-  end
- subgraph Core_Orchestrator["ОРКЕСТРАТОР"]
-        OR1["Router / Flow Manager"]
-        OR2["Security & Policy Filter"]
-        OR3["Confidence Manager"]
-  end
- subgraph Classification_Agent["Агент классификации"]
-        CL1["SentenceTransformer (Embeddings)"]
-        CL2["Logistic Regression Classifier"]
-        CL3["HDBSCAN (кластеризация новых тем)"]
-  end
- subgraph Knowledge_RAG["RAG-подсистема"]
-        KG1["Парсер документов (PDF, DOCX, HTML, OCR)"]
-        KG2["FAISS Vector Index"]
-        KG3["Knowledge Base (локальные файлы)"]
-  end
- subgraph Planning_Agent["Агент планирования и ответа"]
-        PL1["SLM / Qwen-7B"]
-        PL2["Генератор плана действий"]
-  end
- subgraph Automation_Agent["Агент автоматизации"]
-        AU1["Executor (API / Script Runner)"]
-        AU2["Эмуляция исполнения"]
-  end
- subgraph Self_Learning["Агент самообучения"]
-        SL1["Логирование результатов"]
-        SL2["Retrain Loop (обновление моделей)"]
-        SL3["Перестроение индекса и кластеров"]
-  end
- subgraph Storage["Хранилище"]
-        ST1["Документы (md, pdf, html)"]
-        ST2["FAISS Index Files"]
-        ST3["Модели (embeddings, LogReg, HDBSCAN)"]
-        ST4["Логи и метаданные"]
-  end
-    UI1 --> OR1
-    UI2 --> OR1
-    OR1 --> OR2
-    OR2 --> CL1
-    CL1 --> CL2
-    CL2 --> OR3
-    OR3 --> CL3 & KG2
-    KG2 --> PL1
-    PL1 --> PL2
-    PL2 --> AU1
-    AU1 --> OR1 & SL1
-    SL1 --> SL2
-    SL2 --> SL3
-    SL3 --> ST2 & ST3
+%% Увеличиваем расстояния
+classDef block fill:#eef,stroke:#333,stroke-width:1px;
+classDef storage fill:#ffe,stroke:#333,stroke-width:1px;
+classDef agent fill:#efe,stroke:#333,stroke-width:1px;
 
+subgraph User_Interface["Пользовательский интерфейс"]
+    UI1["CLI / Chat Interface"]:::block
+    UI2["Web UI"]:::block
+end
 
+subgraph Core_Orchestrator["ОРКЕСТРАТОР"]
+    OR1["Router"]:::agent
+    OR2["Security Filter"]:::agent
+    OR3["Confidence Manager"]:::agent
+end
 
+subgraph Classification_Agent["Классификация"]
+    CL1["SentenceTransformer"]:::agent
+    CL2["Logistic Regression"]:::agent
+    CL3["HDBSCAN"]:::agent
+end
+
+subgraph Knowledge_RAG["RAG"]
+    KG1["Парсер документов"]:::block
+    KG2["FAISS Index"]:::block
+    KG3["База знаний"]:::block
+end
+
+subgraph Planning_Agent["Планирование"]
+    PL1["SLM / Qwen"]:::agent
+    PL2["Генератор ответа"]:::agent
+end
+
+subgraph Automation_Agent["Автоматизация"]
+    AU1["Executor"]:::agent
+    AU2["Mock Actions"]:::agent
+end
+
+subgraph Self_Learning["Самообучение"]
+    SL1["Логирование"]:::agent
+    SL2["Retrain Loop"]:::agent
+    SL3["Перестроение индексов"]:::agent
+end
+
+subgraph Storage["Хранилище"]
+    ST1["Документы"]:::storage
+    ST2["Векторные индексы"]:::storage
+    ST3["Модели"]:::storage
+    ST4["Логи"]:::storage
+end
+
+UI1 --> OR1
+UI2 --> OR1
+OR1 --> OR2
+OR2 --> CL1
+CL1 --> CL2
+CL2 --> OR3
+OR3 --> CL3 & KG2
+KG2 --> PL1
+PL1 --> PL2
+PL2 --> AU1
+AU1 --> OR1 & SL1
+SL1 --> SL2
+SL2 --> SL3
+SL3 --> ST2 & ST3
 
 ```
 
